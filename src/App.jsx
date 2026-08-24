@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard, CheckSquare2, CalendarDays, UserRound, Plus, Search,
   Bell, Clock3, BookOpen, Target, Flame, ChevronLeft, ChevronRight,
   MoreHorizontal, X, Check, Trash2, Pencil, GraduationCap, Sparkles,
-  Timer, Trophy, Mail, MapPin, Save, Menu, CircleAlert,
+  Timer, Trophy, Mail, MapPin, Save, Menu, CircleAlert, Moon, Sun,
+  Palette, LogOut, Cloud, LoaderCircle,
 } from 'lucide-react'
+import AuthScreen, { SetupRequired } from './Auth'
+import { isSupabaseConfigured, supabase } from './supabase'
 
-const STORAGE = 'ruangbelajar-data-v1'
+const STORAGE = 'ruangbelajar-data-v2'
 const months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
 const days = ['Min','Sen','Sel','Rab','Kam','Jum','Sab']
 const subjectColors = {
@@ -22,7 +25,7 @@ const addDays = (date, n) => { const d = new Date(date); d.setDate(d.getDate() +
 const dateLabel = (value) => new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short' }).format(new Date(`${value}T12:00:00`))
 const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`
 
-function starterData() {
+function starterData(user) {
   const now = new Date()
   return {
     tasks: [
@@ -37,18 +40,51 @@ function starterData() {
       { id: uid(), title: 'Belajar mandiri', date: iso(addDays(now, 1)), time: '19:00', endTime: '20:00', room: 'Rumah', repeat: 'Harian', color: '#00a884' },
       { id: uid(), title: 'Evaluasi target', date: iso(addDays(now, 3)), time: '16:00', endTime: '16:45', room: 'Perpustakaan', repeat: 'Bulanan', color: '#f2994a' },
     ],
-    profile: { name: 'Alya Putri', className: 'Kelas XI IPA 2', school: 'SMA Nusantara', email: 'alya@student.id', city: 'Bandung', goal: 'Masuk Teknik Informatika', dailyTarget: 3 },
+    profile: { name: user?.user_metadata?.full_name || 'Pelajar Baru', className: 'Kelas XI IPA 2', school: 'SMA Nusantara', email: user?.email || '', city: 'Bandung', goal: 'Masuk universitas impian', dailyTarget: 3 },
     studyMinutes: 425,
     streak: 7,
   }
 }
 
-function usePlannerData() {
-  const [data, setData] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE)) || starterData() } catch { return starterData() }
-  })
-  useEffect(() => localStorage.setItem(STORAGE, JSON.stringify(data)), [data])
-  return [data, setData]
+function usePlannerData(user) {
+  const cacheKey = `${STORAGE}:${user.id}`
+  const [data, setData] = useState(null)
+  const [syncState, setSyncState] = useState('loading')
+  const hydrated = useRef(false)
+
+  useEffect(() => {
+    let active = true
+    hydrated.current = false
+    const load = async () => {
+      const { data: row, error } = await supabase.from('student_planners').select('data').eq('user_id', user.id).maybeSingle()
+      if (!active) return
+      if (error) {
+        setSyncState('error')
+        try { setData(JSON.parse(localStorage.getItem(cacheKey)) || starterData(user)) } catch { setData(starterData(user)) }
+      } else {
+        const initial = row?.data && Object.keys(row.data).length ? row.data : starterData(user)
+        setData(initial)
+        localStorage.setItem(cacheKey, JSON.stringify(initial))
+        if (!row) await supabase.from('student_planners').insert({ user_id: user.id, data: initial })
+        setSyncState('synced')
+      }
+      hydrated.current = true
+    }
+    load()
+    return () => { active = false }
+  }, [user.id, cacheKey])
+
+  useEffect(() => {
+    if (!data || !hydrated.current) return
+    localStorage.setItem(cacheKey, JSON.stringify(data))
+    setSyncState('saving')
+    const timer = setTimeout(async () => {
+      const { error } = await supabase.from('student_planners').upsert({ user_id: user.id, data })
+      setSyncState(error ? 'error' : 'synced')
+    }, 650)
+    return () => clearTimeout(timer)
+  }, [data, user.id, cacheKey])
+  return [data, setData, syncState]
 }
 
 const nav = [
@@ -57,8 +93,28 @@ const nav = [
 ]
 
 export default function App() {
+  const [theme, setThemeState] = useState(() => localStorage.getItem('ruangbelajar-theme') || 'light')
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const setTheme = (value) => { setThemeState(value); localStorage.setItem('ruangbelajar-theme', value) }
+
+  useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
+  useEffect(() => {
+    if (!supabase) { setAuthLoading(false); return }
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false) })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); setAuthLoading(false) })
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  if (!isSupabaseConfigured) return <SetupRequired theme={theme} setTheme={setTheme}/>
+  if (authLoading) return <div className="app-loading"><LoaderCircle/><p>Menyiapkan planner...</p></div>
+  if (!session) return <AuthScreen theme={theme} setTheme={setTheme}/>
+  return <PlannerApp user={session.user} theme={theme} setTheme={setTheme}/>
+}
+
+function PlannerApp({ user, theme, setTheme }) {
   const [page, setPage] = useState('dashboard')
-  const [data, setData] = usePlannerData()
+  const [data, setData, syncState] = usePlannerData(user)
   const [taskModal, setTaskModal] = useState(false)
   const [scheduleModal, setScheduleModal] = useState(false)
   const [mobileNav, setMobileNav] = useState(false)
@@ -67,6 +123,8 @@ export default function App() {
   const notify = (message) => { setToast(message); setTimeout(() => setToast(''), 2400) }
   const openAdd = () => page === 'calendar' ? setScheduleModal(true) : setTaskModal(true)
   const pageTitle = nav.find(([id]) => id === page)?.[1]
+
+  if (!data) return <div className="app-loading"><LoaderCircle/><p>Memuat jadwal pribadimu...</p></div>
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav ? 'open' : ''}`}>
@@ -91,7 +149,10 @@ export default function App() {
         <div><small>Student planner</small><h1>{pageTitle}</h1></div>
         <div className="header-actions">
           <label className="search"><Search size={18}/><input placeholder="Cari tugas..." /></label>
+          <span className={`sync-state ${syncState}`} title="Status sinkronisasi"><Cloud size={15}/>{syncState === 'saving' ? 'Menyimpan' : syncState === 'error' ? 'Offline' : 'Tersimpan'}</span>
+          <ThemePicker theme={theme} setTheme={setTheme}/>
           <button className="icon-btn" aria-label="Notifikasi"><Bell size={19}/><i/></button>
+          <button className="icon-btn logout-btn" aria-label="Keluar" title="Keluar" onClick={() => supabase.auth.signOut()}><LogOut size={18}/></button>
           {page !== 'profile' && <button className="primary-btn" onClick={openAdd}><Plus size={18}/>{page === 'calendar' ? 'Tambah jadwal' : 'Tambah tugas'}</button>}
         </div>
       </header>
@@ -108,6 +169,11 @@ export default function App() {
     {scheduleModal && <ScheduleModal onClose={() => setScheduleModal(false)} onSave={(schedule) => {setData(d => ({...d,schedules:[...d.schedules,schedule]}));setScheduleModal(false);notify('Jadwal berulang berhasil dibuat')}}/>}
     {toast && <div className="toast"><Check size={17}/>{toast}</div>}
   </div>
+}
+
+function ThemePicker({theme,setTheme}) {
+  const options = [['light',Sun],['dark',Moon],['purple',Palette]]
+  return <div className="theme-picker">{options.map(([id,Icon])=><button key={id} className={theme===id?'active':''} onClick={()=>setTheme(id)} aria-label={`Tema ${id}`} title={`Tema ${id}`}><Icon size={14}/></button>)}</div>
 }
 
 function Avatar({name, large=false}) {
