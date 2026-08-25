@@ -113,9 +113,9 @@ export default function AdminDashboard({ user, theme, setTheme }) {
   const filteredStudents = useMemo(() => filterStudents(students, { status: filter, query }), [students, filter, query])
   const changeStatus = async (student, status) => {
     setActionId(student.user_id)
-    const { error: actionError } = await supabase.rpc('admin_set_student_status', { target_user_id: student.user_id, new_status: status })
+    const { data, error: actionError } = await supabase.rpc('admin_set_student_status', { target_user_id: student.user_id, new_status: status })
     setActionId('')
-    if (actionError) { setError('Perubahan status gagal. Coba muat ulang halaman.'); return }
+    if (actionError || data !== true) { setError('Perubahan status gagal. Coba muat ulang halaman.'); await load(); return }
     setStudents(current => current.map(item => item.user_id === student.user_id ? { ...item, status } : item))
   }
   const deleteStudent = async (student) => {

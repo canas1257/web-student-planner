@@ -25,6 +25,11 @@ export function resolveAccountAccess(rows) {
   }
 }
 
+export function resolveAccountAccessResult(rows, error) {
+  if (error || !rows || (Array.isArray(rows) && rows.length === 0)) return { role: 'error', status: 'unknown' }
+  return resolveAccountAccess(rows)
+}
+
 export function getAdminStats(users, now = new Date(), timeZone = 'Asia/Jakarta') {
   const today = dayKey(now, timeZone)
   return {

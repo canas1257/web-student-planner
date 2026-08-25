@@ -35,9 +35,9 @@ alter table public.user_directory enable row level security;
 alter table public.admin_users enable row level security;
 alter table public.admin_audit_log enable row level security;
 
-revoke all on public.user_directory from anon, authenticated;
-revoke all on public.admin_users from anon, authenticated;
-revoke all on public.admin_audit_log from anon, authenticated;
+revoke all on public.user_directory from public, anon, authenticated;
+revoke all on public.admin_users from public, anon, authenticated;
+revoke all on public.admin_audit_log from public, anon, authenticated;
 
 -- Masukkan akun lama ke direktori tanpa mengubah status jika sudah ada.
 insert into public.user_directory (user_id, email, display_name, created_at)
@@ -103,7 +103,7 @@ set search_path = public, pg_temp
 as $$
   select coalesce(
     (select status <> 'blocked' from public.user_directory where user_id = auth.uid()),
-    true
+    false
   );
 $$;
 
@@ -142,6 +142,27 @@ begin
     d.status
   from public.user_directory d
   where d.user_id = current_user_id;
+end;
+$$;
+
+-- Pemeriksaan berkala tanpa mengubah waktu login terakhir.
+create or replace function public.get_my_account_access()
+returns table (is_admin boolean, access_status text)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  return query
+  select
+    exists(select 1 from public.admin_users a where a.user_id = auth.uid()),
+    d.status
+  from public.user_directory d
+  where d.user_id = auth.uid();
 end;
 $$;
 
@@ -244,12 +265,19 @@ begin
   if not public.is_admin() then
     raise exception 'Admin access required';
   end if;
-  if target_user_id = auth.uid() or exists(select 1 from public.admin_users where user_id = target_user_id) then
+  if target_user_id = auth.uid() then
     raise exception 'Admin accounts cannot be deleted here';
   end if;
 
-  select email into target_email from public.user_directory where user_id = target_user_id;
-  if target_email is null then return false; end if;
+  select u.email into target_email
+  from auth.users u
+  where u.id = target_user_id
+  for update;
+  if not found then return false; end if;
+
+  if exists(select 1 from public.admin_users where user_id = target_user_id) then
+    raise exception 'Admin accounts cannot be deleted here';
+  end if;
 
   insert into public.admin_audit_log (admin_user_id, target_user_id, target_email, action)
   values (auth.uid(), target_user_id, target_email, 'delete_user');
@@ -260,10 +288,20 @@ end;
 $$;
 
 -- Terapkan blokir juga pada akses langsung ke tabel planner.
-drop policy if exists "Users can read their own planner" on public.student_planners;
-drop policy if exists "Users can create their own planner" on public.student_planners;
-drop policy if exists "Users can update their own planner" on public.student_planners;
-drop policy if exists "Users can delete their own planner" on public.student_planners;
+alter table public.student_planners enable row level security;
+
+-- Jadikan policy di bawah sebagai satu-satunya policy planner yang otoritatif.
+do $$
+declare existing_policy record;
+begin
+  for existing_policy in
+    select policyname from pg_policies
+    where schemaname = 'public' and tablename = 'student_planners'
+  loop
+    execute format('drop policy %I on public.student_planners', existing_policy.policyname);
+  end loop;
+end;
+$$;
 
 create policy "Users can read their own planner"
 on public.student_planners for select to authenticated
@@ -286,6 +324,7 @@ using (auth.uid() = user_id and public.is_current_user_allowed());
 revoke all on function public.is_admin() from public, anon;
 revoke all on function public.is_current_user_allowed() from public, anon;
 revoke all on function public.record_user_login() from public, anon;
+revoke all on function public.get_my_account_access() from public, anon;
 revoke all on function public.record_study_activity() from public, anon;
 revoke all on function public.admin_list_students() from public, anon;
 revoke all on function public.admin_set_student_status(uuid, text) from public, anon;
@@ -294,10 +333,14 @@ revoke all on function public.admin_delete_student(uuid) from public, anon;
 grant execute on function public.is_admin() to authenticated;
 grant execute on function public.is_current_user_allowed() to authenticated;
 grant execute on function public.record_user_login() to authenticated;
+grant execute on function public.get_my_account_access() to authenticated;
 grant execute on function public.record_study_activity() to authenticated;
 grant execute on function public.admin_list_students() to authenticated;
 grant execute on function public.admin_set_student_status(uuid, text) to authenticated;
 grant execute on function public.admin_delete_student(uuid) to authenticated;
+
+-- Trigger dipanggil internal oleh Auth, bukan sebagai RPC pengguna.
+revoke all on function public.handle_new_ruangbelajar_user() from public, anon, authenticated;
 
 commit;
 select pg_notify('pgrst', 'reload schema');

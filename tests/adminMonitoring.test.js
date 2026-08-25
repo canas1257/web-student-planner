@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { filterStudents, getAdminStats, resolveAccountAccess } from '../src/adminMonitoring'
+import { filterStudents, getAdminStats, resolveAccountAccess, resolveAccountAccessResult } from '../src/adminMonitoring'
 
 const today = new Date('2026-08-25T12:00:00+07:00')
 
@@ -38,5 +38,11 @@ describe('resolveAccountAccess', () => {
   it('membedakan admin dan murid yang diblokir dari respons RPC', () => {
     expect(resolveAccountAccess([{ is_admin: true, access_status: 'unreviewed' }])).toEqual({ role: 'admin', status: 'unreviewed' })
     expect(resolveAccountAccess([{ is_admin: false, access_status: 'blocked' }])).toEqual({ role: 'student', status: 'blocked' })
+  })
+
+  it('menolak akses ketika pemeriksaan server gagal atau tidak mengembalikan akun', () => {
+    expect(resolveAccountAccessResult(null, { message: 'network error' })).toEqual({ role: 'error', status: 'unknown' })
+    expect(resolveAccountAccessResult([], null)).toEqual({ role: 'error', status: 'unknown' })
+    expect(resolveAccountAccessResult([{ is_admin: false, access_status: 'approved' }], null)).toEqual({ role: 'student', status: 'approved' })
   })
 })

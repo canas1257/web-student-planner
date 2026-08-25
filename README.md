@@ -73,3 +73,5 @@ React, Vite, Lucide React, CSS responsif, dan GitHub Pages.
 ## Catatan data
 
 Sumber data utama planner berada di Supabase dan dipisahkan per akun dengan RLS. `localStorage` hanya digunakan sebagai cache per pengguna dan pilihan tema. Admin hanya menerima nama, email, status verifikasi, serta waktu login/belajar; isi tugas, kalender, profil rinci, dan timer tidak ditampilkan pada Admin Console.
+
+“Belajar hari ini” berarti akun menekan kontrol sesi fokus (Mulai, Jeda, Lanjutkan, atau Selesai); ini adalah indikator aktivitas aplikasi, bukan bukti pengawasan fisik bahwa murid benar-benar belajar. Pemblokiran menghentikan akses server dan aplikasi akan memeriksa ulang status saat jendela difokuskan serta setiap 60 detik. Data yang sebelumnya sudah tersimpan di perangkat pengguna tidak dapat ditarik kembali sepenuhnya, sehingga jangan menyimpan informasi sangat sensitif di planner.
