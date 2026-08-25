@@ -4,10 +4,12 @@ import {
   Bell, Clock3, BookOpen, Target, Flame, ChevronLeft, ChevronRight,
   MoreHorizontal, X, Check, Trash2, Pencil, GraduationCap, Sparkles,
   Timer, Trophy, Mail, MapPin, Save, Menu, CircleAlert, Moon, Sun,
-  Palette, LogOut, Cloud, LoaderCircle,
+  Palette, LogOut, Cloud, LoaderCircle, Play, Pause, CircleCheckBig,
 } from 'lucide-react'
 import AuthScreen, { SetupRequired } from './Auth'
 import { isSupabaseConfigured, supabase } from './supabase'
+import { createNewPlannerData } from './plannerData'
+import { finishTask, getElapsedSeconds, pauseTask, resumeTask, startTask } from './taskTimer'
 
 const STORAGE = 'ruangbelajar-data-v2'
 const months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
@@ -25,27 +27,6 @@ const addDays = (date, n) => { const d = new Date(date); d.setDate(d.getDate() +
 const dateLabel = (value) => new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short' }).format(new Date(`${value}T12:00:00`))
 const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`
 
-function starterData(user) {
-  const now = new Date()
-  return {
-    tasks: [
-      { id: uid(), title: 'Latihan integral substitusi', subject: 'Matematika', due: iso(addDays(now, 1)), priority: 'Tinggi', done: false },
-      { id: uid(), title: 'Laporan praktikum listrik', subject: 'Fisika', due: iso(addDays(now, 2)), priority: 'Tinggi', done: false },
-      { id: uid(), title: 'Membaca bab Revolusi Industri', subject: 'Sejarah', due: iso(addDays(now, 5)), priority: 'Sedang', done: false },
-      { id: uid(), title: 'Ringkasan ekosistem', subject: 'Biologi', due: iso(addDays(now, 8)), priority: 'Rendah', done: true },
-    ],
-    schedules: [
-      { id: uid(), title: 'Matematika', date: iso(now), time: '08:00', endTime: '09:30', room: 'Ruang 2A', repeat: 'Mingguan', color: subjectColors.Matematika },
-      { id: uid(), title: 'Fisika', date: iso(now), time: '10:00', endTime: '11:30', room: 'Lab Sains', repeat: 'Mingguan', color: subjectColors.Fisika },
-      { id: uid(), title: 'Belajar mandiri', date: iso(addDays(now, 1)), time: '19:00', endTime: '20:00', room: 'Rumah', repeat: 'Harian', color: '#00a884' },
-      { id: uid(), title: 'Evaluasi target', date: iso(addDays(now, 3)), time: '16:00', endTime: '16:45', room: 'Perpustakaan', repeat: 'Bulanan', color: '#f2994a' },
-    ],
-    profile: { name: user?.user_metadata?.full_name || 'Pelajar Baru', className: 'Kelas XI IPA 2', school: 'SMA Nusantara', email: user?.email || '', city: 'Bandung', goal: 'Masuk universitas impian', dailyTarget: 3 },
-    studyMinutes: 425,
-    streak: 7,
-  }
-}
-
 function usePlannerData(user) {
   const cacheKey = `${STORAGE}:${user.id}`
   const [data, setData] = useState(null)
@@ -60,9 +41,9 @@ function usePlannerData(user) {
       if (!active) return
       if (error) {
         setSyncState('error')
-        try { setData(JSON.parse(localStorage.getItem(cacheKey)) || starterData(user)) } catch { setData(starterData(user)) }
+        try { setData(JSON.parse(localStorage.getItem(cacheKey)) || createNewPlannerData(user)) } catch { setData(createNewPlannerData(user)) }
       } else {
-        const initial = row?.data && Object.keys(row.data).length ? row.data : starterData(user)
+        const initial = row?.data && Object.keys(row.data).length ? row.data : createNewPlannerData(user)
         setData(initial)
         localStorage.setItem(cacheKey, JSON.stringify(initial))
         if (!row) await supabase.from('student_planners').insert({ user_id: user.id, data: initial })
@@ -117,12 +98,14 @@ function PlannerApp({ user, theme, setTheme }) {
   const [data, setData, syncState] = usePlannerData(user)
   const [taskModal, setTaskModal] = useState(false)
   const [scheduleModal, setScheduleModal] = useState(false)
+  const [focusedTaskId, setFocusedTaskId] = useState(null)
   const [mobileNav, setMobileNav] = useState(false)
   const [toast, setToast] = useState('')
 
   const notify = (message) => { setToast(message); setTimeout(() => setToast(''), 2400) }
   const openAdd = () => page === 'calendar' ? setScheduleModal(true) : setTaskModal(true)
   const pageTitle = nav.find(([id]) => id === page)?.[1]
+  const focusedTask = data?.tasks.find(task => task.id === focusedTaskId)
 
   if (!data) return <div className="app-loading"><LoaderCircle/><p>Memuat jadwal pribadimu...</p></div>
 
@@ -141,7 +124,7 @@ function PlannerApp({ user, theme, setTheme }) {
         <Avatar name={data.profile.name}/><div><strong>{data.profile.name}</strong><small>{data.profile.className}</small></div><MoreHorizontal size={18}/>
       </div>
     </aside>
-    {mobileNav && <div className="scrim" onClick={() => setMobileNav(false)}/>} 
+    {mobileNav && <div className="scrim" onClick={() => setMobileNav(false)}/>}
 
     <main>
       <header>
@@ -158,15 +141,16 @@ function PlannerApp({ user, theme, setTheme }) {
       </header>
 
       <section className="content">
-        {page === 'dashboard' && <Dashboard data={data} setData={setData} setPage={setPage} openTask={() => setTaskModal(true)}/>} 
-        {page === 'tasks' && <Tasks data={data} setData={setData} onAdd={() => setTaskModal(true)} notify={notify}/>} 
-        {page === 'calendar' && <Calendar data={data} setData={setData} onAdd={() => setScheduleModal(true)} notify={notify}/>} 
-        {page === 'profile' && <Profile data={data} setData={setData} notify={notify}/>} 
+        {page === 'dashboard' && <Dashboard data={data} setData={setData} setPage={setPage} openTask={() => setTaskModal(true)} openFocus={setFocusedTaskId}/>}
+        {page === 'tasks' && <Tasks data={data} setData={setData} onAdd={() => setTaskModal(true)} openFocus={setFocusedTaskId} notify={notify}/>}
+        {page === 'calendar' && <Calendar data={data} setData={setData} onAdd={() => setScheduleModal(true)} notify={notify}/>}
+        {page === 'profile' && <Profile data={data} setData={setData} notify={notify}/>}
       </section>
     </main>
 
     {taskModal && <TaskModal onClose={() => setTaskModal(false)} onSave={(task) => {setData(d => ({...d,tasks:[...d.tasks,task]}));setTaskModal(false);notify('Tugas berhasil ditambahkan')}}/>}
     {scheduleModal && <ScheduleModal onClose={() => setScheduleModal(false)} onSave={(schedule) => {setData(d => ({...d,schedules:[...d.schedules,schedule]}));setScheduleModal(false);notify('Jadwal berulang berhasil dibuat')}}/>}
+    {focusedTask && <TaskFocusModal task={focusedTask} onClose={() => setFocusedTaskId(null)} onChange={(updated, finished=false) => { setData(d => ({...d, tasks:d.tasks.map(t => t.id===updated.id?updated:t), studyMinutes: finished ? d.studyMinutes + Math.max(1, Math.round(updated.elapsedSeconds/60)) : d.studyMinutes})); if (finished) notify('Tugas selesai. Kerja bagus!') }}/>}
     {toast && <div className="toast"><Check size={17}/>{toast}</div>}
   </div>
 }
@@ -180,7 +164,7 @@ function Avatar({name, large=false}) {
   return <div className={`avatar ${large ? 'large' : ''}`}>{name.split(' ').slice(0,2).map(x => x[0]).join('')}</div>
 }
 
-function Dashboard({data,setData,setPage,openTask}) {
+function Dashboard({data,setData,setPage,openTask,openFocus}) {
   const active = [...data.tasks].filter(t => !t.done).sort((a,b) => new Date(a.due)-new Date(b.due))
   const today = iso(new Date())
   const upcoming = occurrences(data.schedules, new Date(), addDays(new Date(), 7)).slice(0,4)
@@ -200,7 +184,7 @@ function Dashboard({data,setData,setPage,openTask}) {
     <div className="dashboard-grid">
       <section className="panel priority-panel">
         <PanelHead title="Prioritas tugas" sub="Selesaikan yang paling mendesak" action="Lihat semua" onClick={() => setPage('tasks')}/>
-        <div className="task-list">{active.slice(0,4).map((task,i) => <TaskRow key={task.id} task={task} rank={i+1} onToggle={() => setData(d => ({...d,tasks:d.tasks.map(t => t.id===task.id?{...t,done:true}:t)}))}/>)}</div>
+        <div className="task-list">{active.slice(0,4).map((task,i) => <TaskRow key={task.id} task={task} rank={i+1} onOpen={() => openFocus(task.id)} onToggle={() => setData(d => ({...d,tasks:d.tasks.map(t => t.id===task.id?{...t,done:true}:t)}))}/>)}</div>
         {!active.length && <Empty text="Semua tugas sudah beres. Hebat!"/>}
         <button className="ghost-add" onClick={openTask}><Plus size={17}/> Tambah tugas baru</button>
       </section>
@@ -227,12 +211,12 @@ function urgency(task) {
   if (diff === 1) return ['Besok','soon']
   return [`${diff} hari lagi`, diff <= 3 ? 'soon' : 'normal']
 }
-function TaskRow({task,rank,onToggle,onDelete}) {
+function TaskRow({task,rank,onToggle,onDelete,onOpen}) {
   const [label,tone] = urgency(task)
-  return <div className={`task-row ${task.done?'is-done':''}`}><button className="check" onClick={onToggle}>{task.done && <Check size={14}/>}</button><span className="rank">{rank}</span><div className="task-copy"><strong>{task.title}</strong><span><i style={{background:subjectColors[task.subject]||subjectColors.Lainnya}}/>{task.subject}</span></div><div className={`deadline ${tone}`}><Clock3 size={14}/>{label}</div>{onDelete && <button className="delete-btn" onClick={onDelete}><Trash2 size={16}/></button>}</div>
+  return <div className={`task-row ${task.done?'is-done':''}`} onClick={onOpen} role={onOpen?'button':undefined} tabIndex={onOpen?0:undefined} onKeyDown={e=>{if(onOpen&&(e.key==='Enter'||e.key===' '))onOpen()}}><button className="check" onClick={e=>{e.stopPropagation();onToggle()}}>{task.done && <Check size={14}/>}</button><span className="rank">{rank}</span><div className="task-copy"><strong>{task.title}</strong><span><i style={{background:subjectColors[task.subject]||subjectColors.Lainnya}}/>{task.subject}{task.timerState==='running'&&<em className="focus-status">● Sedang fokus</em>}{task.timerState==='paused'&&<em className="focus-status paused">Dijeda</em>}</span></div><div className={`deadline ${tone}`}><Clock3 size={14}/>{label}</div>{onDelete && <button className="delete-btn" onClick={e=>{e.stopPropagation();onDelete()}}><Trash2 size={16}/></button>}</div>
 }
 
-function Tasks({data,setData,onAdd,notify}) {
+function Tasks({data,setData,onAdd,openFocus,notify}) {
   const [filter,setFilter] = useState('Aktif')
   const [query,setQuery] = useState('')
   const tasks = useMemo(() => [...data.tasks].filter(t => filter==='Semua'||(filter==='Selesai'?t.done:!t.done)).filter(t => t.title.toLowerCase().includes(query.toLowerCase())).sort((a,b) => a.done-b.done || new Date(a.due)-new Date(b.due)),[data.tasks,filter,query])
@@ -242,7 +226,7 @@ function Tasks({data,setData,onAdd,notify}) {
     <div className="page-intro"><div><span className="eyebrow">DAFTAR TUGAS</span><h2>Satu per satu, pasti selesai.</h2><p>Tugas otomatis diurutkan berdasarkan tenggat terdekat.</p></div><button className="primary-btn" onClick={onAdd}><Plus size={18}/>Tambah tugas</button></div>
     <section className="panel tasks-page">
       <div className="task-toolbar"><div className="tabs">{['Aktif','Selesai','Semua'].map(x => <button key={x} className={filter===x?'active':''} onClick={() => setFilter(x)}>{x}<span>{x==='Aktif'?data.tasks.filter(t=>!t.done).length:x==='Selesai'?data.tasks.filter(t=>t.done).length:data.tasks.length}</span></button>)}</div><label className="inline-search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Cari tugas"/></label></div>
-      <div className="task-list roomy">{tasks.map((task,i)=><TaskRow key={task.id} task={task} rank={i+1} onToggle={()=>toggle(task.id)} onDelete={()=>remove(task.id)}/>)}</div>
+      <div className="task-list roomy">{tasks.map((task,i)=><TaskRow key={task.id} task={task} rank={i+1} onOpen={()=>openFocus(task.id)} onToggle={()=>toggle(task.id)} onDelete={()=>remove(task.id)}/>)}</div>
       {!tasks.length && <Empty text="Tidak ada tugas pada kategori ini."/>}
     </section>
   </>
@@ -310,9 +294,45 @@ function Profile({data,setData,notify}) {
 function Field({label,value,onChange,type='text',...rest}) { return <label><span>{label}</span><input type={type} value={value} onChange={e=>onChange(e.target.value)} {...rest}/></label> }
 
 function Modal({title,subtitle,onClose,children}) { return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal"><div className="modal-head"><div><h3>{title}</h3><p>{subtitle}</p></div><button onClick={onClose}><X/></button></div>{children}</div></div> }
+
+function formatTimer(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const rest = seconds % 60
+  return [hours, minutes, rest].map(value => String(value).padStart(2, '0')).join(':')
+}
+
+function TaskFocusModal({task,onClose,onChange}) {
+  const [now,setNow] = useState(Date.now())
+  useEffect(() => {
+    if (task.timerState !== 'running') return undefined
+    setNow(Date.now())
+    const interval = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [task.timerState, task.activeSince])
+  const elapsed = getElapsedSeconds(task, now)
+  const state = task.done ? 'completed' : (task.timerState || 'idle')
+  const stateLabel = { idle:'Siap dimulai', running:'Sedang dikerjakan', paused:'Dijeda — bisa dilanjutkan nanti', completed:'Tugas sudah selesai' }[state]
+  return <div className="modal-backdrop focus-backdrop" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="focus-modal">
+    <button className="focus-close" onClick={onClose} aria-label="Tutup"><X/></button>
+    <div className="focus-top"><span className="focus-subject" style={{'--subject':subjectColors[task.subject]||subjectColors.Lainnya}}>{task.subject}</span><span className={`focus-state ${state}`}>{stateLabel}</span></div>
+    <h3>{task.title}</h3>
+    <div className="focus-meta"><span><CalendarDays/>Deadline {dateLabel(task.due)}</span><span><Target/>Prioritas {task.priority}</span></div>
+    <div className={`timer-ring ${state}`}><div><Timer/><strong>{formatTimer(elapsed)}</strong><small>WAKTU FOKUS</small></div></div>
+    <p className="focus-hint">{state==='running'?'Tetap fokus. Waktumu tersimpan otomatis meski popup ditutup.':state==='paused'?'Ada keperluan lain? Tidak masalah, progres waktumu sudah tersimpan.':state==='completed'?'Hebat! Durasi belajarmu sudah masuk ke statistik.':'Klik mulai saat kamu siap mengerjakan tugas ini.'}</p>
+    <div className="focus-actions">
+      {state==='idle'&&<button className="focus-primary" onClick={()=>onChange(startTask(task))}><Play/>Mulai</button>}
+      {state==='running'&&<><button className="focus-secondary" onClick={()=>onChange(pauseTask(task))}><Pause/>Jeda</button><button className="focus-finish" onClick={()=>onChange(finishTask(task),true)}><CircleCheckBig/>Selesai</button></>}
+      {state==='paused'&&<><button className="focus-primary" onClick={()=>onChange(resumeTask(task))}><Play/>Lanjutkan</button><button className="focus-finish" onClick={()=>onChange(finishTask(task),true)}><CircleCheckBig/>Selesai</button></>}
+      {state==='completed'&&<button className="focus-primary" onClick={onClose}><Check/>Tutup</button>}
+    </div>
+  </div></div>
+}
+
 function TaskModal({onClose,onSave}) {
   const [form,setForm]=useState({title:'',subject:'Matematika',due:iso(addDays(new Date(),1)),priority:'Sedang'})
-  const submit=e=>{e.preventDefault();if(!form.title.trim())return;onSave({id:uid(),...form,title:form.title.trim(),done:false})}
+  const submit=e=>{e.preventDefault();if(!form.title.trim())return;onSave({id:uid(),...form,title:form.title.trim(),done:false,timerState:'idle',elapsedSeconds:0,activeSince:null})}
   return <Modal title="Tambah tugas baru" subtitle="Isi detail tugas dan kami akan mengatur prioritasnya." onClose={onClose}><form onSubmit={submit} className="modal-form"><Field label="Nama tugas" value={form.title} onChange={v=>setForm({...form,title:v})} placeholder="Contoh: Latihan integral"/><label><span>Mata pelajaran</span><select value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})}>{Object.keys(subjectColors).map(x=><option key={x}>{x}</option>)}</select></label><div className="form-grid"><Field label="Tenggat" type="date" value={form.due} onChange={v=>setForm({...form,due:v})}/><label><span>Prioritas</span><select value={form.priority} onChange={e=>setForm({...form,priority:e.target.value})}><option>Tinggi</option><option>Sedang</option><option>Rendah</option></select></label></div><div className="modal-actions"><button type="button" onClick={onClose}>Batal</button><button className="primary-btn" type="submit"><Plus size={17}/>Tambahkan tugas</button></div></form></Modal>
 }
 function ScheduleModal({onClose,onSave}) {
