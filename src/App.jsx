@@ -4,10 +4,12 @@ import {
   Bell, Clock3, BookOpen, Target, Flame, ChevronLeft, ChevronRight,
   MoreHorizontal, X, Check, Trash2, Pencil, GraduationCap, Sparkles,
   Timer, Trophy, Mail, MapPin, Save, Menu, CircleAlert, Moon, Sun,
-  Palette, LogOut, Cloud, LoaderCircle, Play, Pause, CircleCheckBig,
+  Palette, LogOut, Cloud, LoaderCircle, Play, Pause, CircleCheckBig, ShieldCheck,
 } from 'lucide-react'
 import AuthScreen, { SetupRequired } from './Auth'
+import AdminDashboard from './AdminDashboard'
 import { isSupabaseConfigured, supabase } from './supabase'
+import { resolveAccountAccess } from './adminMonitoring'
 import { createNewPlannerData } from './plannerData'
 import { finishTask, getElapsedSeconds, pauseTask, resumeTask, startTask } from './taskTimer'
 
@@ -77,6 +79,8 @@ export default function App() {
   const [theme, setThemeState] = useState(() => localStorage.getItem('ruangbelajar-theme') || 'light')
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [accountAccess, setAccountAccess] = useState(null)
+  const [accessLoading, setAccessLoading] = useState(false)
   const setTheme = (value) => { setThemeState(value); localStorage.setItem('ruangbelajar-theme', value) }
 
   useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
@@ -86,11 +90,29 @@ export default function App() {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); setAuthLoading(false) })
     return () => listener.subscription.unsubscribe()
   }, [])
+  useEffect(() => {
+    if (!session?.user) { setAccountAccess(null); setAccessLoading(false); return }
+    let active = true
+    setAccessLoading(true)
+    supabase.rpc('record_user_login').then(({ data, error }) => {
+      if (!active) return
+      setAccountAccess(error ? { role: 'student', status: 'unreviewed', setupMissing: true } : resolveAccountAccess(data))
+      setAccessLoading(false)
+    })
+    return () => { active = false }
+  }, [session?.user?.id])
 
   if (!isSupabaseConfigured) return <SetupRequired theme={theme} setTheme={setTheme}/>
   if (authLoading) return <div className="app-loading"><LoaderCircle/><p>Menyiapkan planner...</p></div>
   if (!session) return <AuthScreen theme={theme} setTheme={setTheme}/>
+  if (accessLoading || !accountAccess) return <div className="app-loading"><LoaderCircle/><p>Memeriksa akses akun...</p></div>
+  if (accountAccess.role === 'admin') return <AdminDashboard user={session.user} theme={theme} setTheme={setTheme}/>
+  if (accountAccess.status === 'blocked') return <BlockedAccount email={session.user.email}/>
   return <PlannerApp user={session.user} theme={theme} setTheme={setTheme}/>
+}
+
+function BlockedAccount({ email }) {
+  return <div className="blocked-account"><div><span><ShieldCheck/></span><small>AKSES DINONAKTIFKAN</small><h1>Akun ini telah diblokir</h1><p>Akun <strong>{email}</strong> tidak dapat mengakses planner. Hubungi guru atau administrator jika menurutmu ini sebuah kesalahan.</p><button onClick={() => supabase.auth.signOut()}><LogOut/>Keluar dari akun</button></div></div>
 }
 
 function PlannerApp({ user, theme, setTheme }) {
@@ -106,6 +128,15 @@ function PlannerApp({ user, theme, setTheme }) {
   const openAdd = () => page === 'calendar' ? setScheduleModal(true) : setTaskModal(true)
   const pageTitle = nav.find(([id]) => id === page)?.[1]
   const focusedTask = data?.tasks.find(task => task.id === focusedTaskId)
+  const saveFocusChange = (updated, finished = false) => {
+    setData(current => ({
+      ...current,
+      tasks: current.tasks.map(task => task.id === updated.id ? updated : task),
+      studyMinutes: finished ? current.studyMinutes + Math.max(1, Math.round(updated.elapsedSeconds / 60)) : current.studyMinutes,
+    }))
+    supabase.rpc('record_study_activity')
+    if (finished) notify('Tugas selesai. Kerja bagus!')
+  }
 
   if (!data) return <div className="app-loading"><LoaderCircle/><p>Memuat jadwal pribadimu...</p></div>
 
@@ -150,7 +181,7 @@ function PlannerApp({ user, theme, setTheme }) {
 
     {taskModal && <TaskModal onClose={() => setTaskModal(false)} onSave={(task) => {setData(d => ({...d,tasks:[...d.tasks,task]}));setTaskModal(false);notify('Tugas berhasil ditambahkan')}}/>}
     {scheduleModal && <ScheduleModal onClose={() => setScheduleModal(false)} onSave={(schedule) => {setData(d => ({...d,schedules:[...d.schedules,schedule]}));setScheduleModal(false);notify('Jadwal berulang berhasil dibuat')}}/>}
-    {focusedTask && <TaskFocusModal task={focusedTask} onClose={() => setFocusedTaskId(null)} onChange={(updated, finished=false) => { setData(d => ({...d, tasks:d.tasks.map(t => t.id===updated.id?updated:t), studyMinutes: finished ? d.studyMinutes + Math.max(1, Math.round(updated.elapsedSeconds/60)) : d.studyMinutes})); if (finished) notify('Tugas selesai. Kerja bagus!') }}/>}
+    {focusedTask && <TaskFocusModal task={focusedTask} onClose={() => setFocusedTaskId(null)} onChange={saveFocusChange}/>}
     {toast && <div className="toast"><Check size={17}/>{toast}</div>}
   </div>
 }
