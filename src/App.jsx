@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard, CheckSquare2, CalendarDays, UserRound, Plus, Search,
   Bell, Clock3, BookOpen, Target, Flame, ChevronLeft, ChevronRight,
   MoreHorizontal, X, Check, Trash2, Pencil, GraduationCap, Sparkles,
   Timer, Trophy, Mail, MapPin, Save, Menu, CircleAlert, Moon, Sun,
-  Palette, LogOut, Cloud, LoaderCircle, Play, Pause, CircleCheckBig,
+  Palette, LogOut, Cloud, LoaderCircle, Play, Pause, CircleCheckBig, ShieldCheck, RefreshCw,
 } from 'lucide-react'
 import AuthScreen, { SetupRequired } from './Auth'
+import AdminDashboard from './AdminDashboard'
 import { isSupabaseConfigured, supabase } from './supabase'
+import { resolveAccountAccessResult } from './adminMonitoring'
 import { createNewPlannerData } from './plannerData'
 import { finishTask, getElapsedSeconds, pauseTask, resumeTask, startTask } from './taskTimer'
 
@@ -27,7 +29,7 @@ const addDays = (date, n) => { const d = new Date(date); d.setDate(d.getDate() +
 const dateLabel = (value) => new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short' }).format(new Date(`${value}T12:00:00`))
 const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`
 
-function usePlannerData(user) {
+function usePlannerData(user, onAccessDenied) {
   const cacheKey = `${STORAGE}:${user.id}`
   const [data, setData] = useState(null)
   const [syncState, setSyncState] = useState('loading')
@@ -40,20 +42,23 @@ function usePlannerData(user) {
       const { data: row, error } = await supabase.from('student_planners').select('data').eq('user_id', user.id).maybeSingle()
       if (!active) return
       if (error) {
+        if (error.code === '42501' || /blocked|permission denied/i.test(error.message || '')) onAccessDenied()
         setSyncState('error')
         try { setData(JSON.parse(localStorage.getItem(cacheKey)) || createNewPlannerData(user)) } catch { setData(createNewPlannerData(user)) }
       } else {
         const initial = row?.data && Object.keys(row.data).length ? row.data : createNewPlannerData(user)
         setData(initial)
         localStorage.setItem(cacheKey, JSON.stringify(initial))
-        if (!row) await supabase.from('student_planners').insert({ user_id: user.id, data: initial })
-        setSyncState('synced')
+        let insertError = null
+        if (!row) ({ error: insertError } = await supabase.from('student_planners').insert({ user_id: user.id, data: initial }))
+        if (insertError && (insertError.code === '42501' || /blocked|permission denied/i.test(insertError.message || ''))) onAccessDenied()
+        setSyncState(insertError ? 'error' : 'synced')
       }
       hydrated.current = true
     }
     load()
     return () => { active = false }
-  }, [user.id, cacheKey])
+  }, [user.id, cacheKey, onAccessDenied])
 
   useEffect(() => {
     if (!data || !hydrated.current) return
@@ -61,10 +66,11 @@ function usePlannerData(user) {
     setSyncState('saving')
     const timer = setTimeout(async () => {
       const { error } = await supabase.from('student_planners').upsert({ user_id: user.id, data })
+      if (error && (error.code === '42501' || /blocked|permission denied/i.test(error.message || ''))) onAccessDenied()
       setSyncState(error ? 'error' : 'synced')
     }, 650)
     return () => clearTimeout(timer)
-  }, [data, user.id, cacheKey])
+  }, [data, user.id, cacheKey, onAccessDenied])
   return [data, setData, syncState]
 }
 
@@ -77,7 +83,14 @@ export default function App() {
   const [theme, setThemeState] = useState(() => localStorage.getItem('ruangbelajar-theme') || 'light')
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [accountAccess, setAccountAccess] = useState(null)
+  const [accessLoading, setAccessLoading] = useState(false)
+  const [accessRetry, setAccessRetry] = useState(0)
   const setTheme = (value) => { setThemeState(value); localStorage.setItem('ruangbelajar-theme', value) }
+  const denyAccess = useCallback(() => {
+    if (session?.user?.id) localStorage.removeItem(`${STORAGE}:${session.user.id}`)
+    setAccountAccess({ role: 'student', status: 'blocked' })
+  }, [session?.user?.id])
 
   useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
   useEffect(() => {
@@ -86,16 +99,45 @@ export default function App() {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); setAuthLoading(false) })
     return () => listener.subscription.unsubscribe()
   }, [])
+  useEffect(() => {
+    if (!session?.user) { setAccountAccess(null); setAccessLoading(false); return }
+    let active = true
+    setAccessLoading(true)
+    const applyResult = (data, error) => {
+      if (!active) return
+      const next = resolveAccountAccessResult(data, error)
+      if (next.status === 'blocked') localStorage.removeItem(`${STORAGE}:${session.user.id}`)
+      setAccountAccess(next)
+      setAccessLoading(false)
+    }
+    supabase.rpc('record_user_login').then(({ data, error }) => applyResult(data, error))
+    const refreshAccess = () => supabase.rpc('get_my_account_access').then(({ data, error }) => applyResult(data, error))
+    const interval = setInterval(refreshAccess, 60000)
+    window.addEventListener('focus', refreshAccess)
+    return () => { active = false; clearInterval(interval); window.removeEventListener('focus', refreshAccess) }
+  }, [session?.user?.id, accessRetry])
 
   if (!isSupabaseConfigured) return <SetupRequired theme={theme} setTheme={setTheme}/>
   if (authLoading) return <div className="app-loading"><LoaderCircle/><p>Menyiapkan planner...</p></div>
   if (!session) return <AuthScreen theme={theme} setTheme={setTheme}/>
-  return <PlannerApp user={session.user} theme={theme} setTheme={setTheme}/>
+  if (accessLoading || !accountAccess) return <div className="app-loading"><LoaderCircle/><p>Memeriksa akses akun...</p></div>
+  if (accountAccess.role === 'error') return <AccessCheckError onRetry={() => setAccessRetry(value => value + 1)}/>
+  if (accountAccess.role === 'admin') return <AdminDashboard user={session.user} theme={theme} setTheme={setTheme}/>
+  if (accountAccess.status === 'blocked') return <BlockedAccount email={session.user.email}/>
+  return <PlannerApp user={session.user} theme={theme} setTheme={setTheme} onAccessDenied={denyAccess}/>
 }
 
-function PlannerApp({ user, theme, setTheme }) {
+function AccessCheckError({ onRetry }) {
+  return <div className="blocked-account"><div><span><CircleAlert/></span><small>KONEKSI KEAMANAN BERMASALAH</small><h1>Akses belum dapat diverifikasi</h1><p>Demi keamanan data, planner tidak dibuka ketika pemeriksaan akun gagal. Periksa koneksi lalu coba kembali.</p><button onClick={onRetry}><RefreshCw/>Coba lagi</button></div></div>
+}
+
+function BlockedAccount({ email }) {
+  return <div className="blocked-account"><div><span><ShieldCheck/></span><small>AKSES DINONAKTIFKAN</small><h1>Akun ini telah diblokir</h1><p>Akun <strong>{email}</strong> tidak dapat mengakses planner. Hubungi guru atau administrator jika menurutmu ini sebuah kesalahan.</p><button onClick={() => supabase.auth.signOut()}><LogOut/>Keluar dari akun</button></div></div>
+}
+
+function PlannerApp({ user, theme, setTheme, onAccessDenied }) {
   const [page, setPage] = useState('dashboard')
-  const [data, setData, syncState] = usePlannerData(user)
+  const [data, setData, syncState] = usePlannerData(user, onAccessDenied)
   const [taskModal, setTaskModal] = useState(false)
   const [scheduleModal, setScheduleModal] = useState(false)
   const [focusedTaskId, setFocusedTaskId] = useState(null)
@@ -106,6 +148,17 @@ function PlannerApp({ user, theme, setTheme }) {
   const openAdd = () => page === 'calendar' ? setScheduleModal(true) : setTaskModal(true)
   const pageTitle = nav.find(([id]) => id === page)?.[1]
   const focusedTask = data?.tasks.find(task => task.id === focusedTaskId)
+  const saveFocusChange = (updated, finished = false) => {
+    setData(current => ({
+      ...current,
+      tasks: current.tasks.map(task => task.id === updated.id ? updated : task),
+      studyMinutes: finished ? current.studyMinutes + Math.max(1, Math.round(updated.elapsedSeconds / 60)) : current.studyMinutes,
+    }))
+    supabase.rpc('record_study_activity').then(({ error }) => {
+      if (error && /blocked|permission denied/i.test(error.message || '')) onAccessDenied()
+    })
+    if (finished) notify('Tugas selesai. Kerja bagus!')
+  }
 
   if (!data) return <div className="app-loading"><LoaderCircle/><p>Memuat jadwal pribadimu...</p></div>
 
@@ -150,7 +203,7 @@ function PlannerApp({ user, theme, setTheme }) {
 
     {taskModal && <TaskModal onClose={() => setTaskModal(false)} onSave={(task) => {setData(d => ({...d,tasks:[...d.tasks,task]}));setTaskModal(false);notify('Tugas berhasil ditambahkan')}}/>}
     {scheduleModal && <ScheduleModal onClose={() => setScheduleModal(false)} onSave={(schedule) => {setData(d => ({...d,schedules:[...d.schedules,schedule]}));setScheduleModal(false);notify('Jadwal berulang berhasil dibuat')}}/>}
-    {focusedTask && <TaskFocusModal task={focusedTask} onClose={() => setFocusedTaskId(null)} onChange={(updated, finished=false) => { setData(d => ({...d, tasks:d.tasks.map(t => t.id===updated.id?updated:t), studyMinutes: finished ? d.studyMinutes + Math.max(1, Math.round(updated.elapsedSeconds/60)) : d.studyMinutes})); if (finished) notify('Tugas selesai. Kerja bagus!') }}/>}
+    {focusedTask && <TaskFocusModal task={focusedTask} onClose={() => setFocusedTaskId(null)} onChange={saveFocusChange}/>}
     {toast && <div className="toast"><Check size={17}/>{toast}</div>}
   </div>
 }

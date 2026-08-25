@@ -9,6 +9,19 @@ create table if not exists public.student_planners (
 
 alter table public.student_planners enable row level security;
 
+-- Helper dasar. Migrasi admin mengganti implementasinya agar akun diblokir ditolak.
+-- Blok ini tidak menimpa helper jika migrasi admin sudah terpasang.
+do $$
+begin
+  if to_regprocedure('public.is_current_user_allowed()') is null then
+    execute 'create function public.is_current_user_allowed()
+      returns boolean language sql stable security definer
+      set search_path = public, pg_temp
+      as ''select auth.uid() is not null''';
+  end if;
+end;
+$$;
+
 drop policy if exists "Users can read their own planner" on public.student_planners;
 drop policy if exists "Users can create their own planner" on public.student_planners;
 drop policy if exists "Users can update their own planner" on public.student_planners;
@@ -16,20 +29,20 @@ drop policy if exists "Users can delete their own planner" on public.student_pla
 
 create policy "Users can read their own planner"
 on public.student_planners for select to authenticated
-using (auth.uid() = user_id);
+using (auth.uid() = user_id and public.is_current_user_allowed());
 
 create policy "Users can create their own planner"
 on public.student_planners for insert to authenticated
-with check (auth.uid() = user_id);
+with check (auth.uid() = user_id and public.is_current_user_allowed());
 
 create policy "Users can update their own planner"
 on public.student_planners for update to authenticated
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+using (auth.uid() = user_id and public.is_current_user_allowed())
+with check (auth.uid() = user_id and public.is_current_user_allowed());
 
 create policy "Users can delete their own planner"
 on public.student_planners for delete to authenticated
-using (auth.uid() = user_id);
+using (auth.uid() = user_id and public.is_current_user_allowed());
 
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on table public.student_planners to authenticated;
