@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { GraduationCap, Mail, LockKeyhole, UserRound, Eye, EyeOff, ArrowRight, Check, Sparkles, Palette } from 'lucide-react'
 import { supabase } from './supabase'
+import { buildEmailRedirectUrl } from './redirectUrl'
 
 export default function AuthScreen({ theme, setTheme }) {
   const [mode, setMode] = useState('login')
@@ -29,7 +30,7 @@ export default function AuthScreen({ theme, setTheme }) {
           password: form.password,
           options: {
             data: { full_name: form.name },
-            emailRedirectTo: `${window.location.origin}${import.meta.env.BASE_URL}`,
+            emailRedirectTo: buildEmailRedirectUrl(window.location.href, import.meta.env.BASE_URL),
           },
         })
     setLoading(false)
