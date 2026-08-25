@@ -306,3 +306,10 @@ select pg_notify('pgrst', 'reload schema');
 -- insert into public.admin_users (user_id)
 -- select id from auth.users where lower(email) = lower('admin@contoh.com')
 -- on conflict (user_id) do nothing;
+
+-- Verifikasi instalasi. Hasil harus menampilkan ketiga tabel berikut.
+select table_schema, table_name
+from information_schema.tables
+where table_schema = 'public'
+  and table_name in ('user_directory', 'admin_users', 'admin_audit_log')
+order by table_name;
