@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { getNotificationPage, registerWebPush, revokePushToken } from '../src/notificationService'
 
 const config = { vapidKey: 'public-vapid', currentUrl: 'https://belajarteratur.web.id/', baseUrl: './' }
+const notificationSource = readFileSync(new URL('../src/notificationService.js', import.meta.url), 'utf8')
+
+it('menjaga isi notifikasi privat pada lock screen Android', () => {
+  expect(notificationSource).toContain('visibility: 0')
+})
 
 describe('registerWebPush', () => {
   it('berhenti dengan aman ketika browser tidak mendukung messaging', async () => {

@@ -3,6 +3,8 @@
 
 create extension if not exists pgcrypto;
 
+revoke create on schema public from public, anon, authenticated;
+
 create table if not exists public.notification_preferences (
   user_id uuid primary key references auth.users(id) on delete cascade,
   task_deadline_enabled boolean not null default true,
@@ -40,12 +42,16 @@ create table if not exists public.notification_jobs (
   scheduled_for timestamptz not null,
   status text not null default 'pending' check (status in ('pending', 'sending', 'sent', 'failed', 'cancelled')),
   attempts integer not null default 0 check (attempts between 0 and 10),
+  claim_id uuid,
   last_error text,
   sent_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(user_id, source_key)
 );
+
+alter table public.notification_jobs
+  add column if not exists claim_id uuid;
 
 create index if not exists notification_jobs_pending_idx
 on public.notification_jobs(scheduled_for)
@@ -68,7 +74,6 @@ revoke all on public.announcements from public, anon, authenticated;
 
 grant select on public.notification_preferences to authenticated;
 grant select on public.notification_jobs to authenticated;
-grant select on public.announcements to authenticated;
 
 alter table public.notification_preferences enable row level security;
 alter table public.push_subscriptions enable row level security;
@@ -102,7 +107,7 @@ returns table (
 )
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, public, pg_temp
 as $$
 begin
   if auth.uid() is null or not public.is_current_user_allowed() then
@@ -130,7 +135,7 @@ create or replace function public.update_my_notification_preferences(
 returns boolean
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, public, pg_temp
 as $$
 begin
   if auth.uid() is null or not public.is_current_user_allowed() then
@@ -161,27 +166,28 @@ create or replace function public.save_my_push_subscription(
 returns uuid
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   subscription_id uuid;
-  token_owner uuid;
+  active_subscription_count integer;
 begin
   if auth.uid() is null or not public.is_current_user_allowed() then
     raise exception 'Account access denied';
   end if;
-  if char_length(device_token) not between 20 and 4096 then
+  if char_length(device_token) not between 20 and 4096
+     or device_token !~ '^[A-Za-z0-9_:\-]+$' then
     raise exception 'Invalid push token';
   end if;
   if device_platform not in ('web', 'android') then
     raise exception 'Invalid device platform';
   end if;
 
-  select p.user_id into token_owner
+  select count(*) into active_subscription_count
   from public.push_subscriptions p
-  where p.token = device_token;
-  if token_owner is not null and token_owner <> auth.uid() then
-    raise exception 'Push token already belongs to another account';
+  where p.user_id = auth.uid() and p.enabled and p.token <> device_token;
+  if active_subscription_count >= 8 then
+    raise exception 'Device limit reached';
   end if;
 
   insert into public.push_subscriptions(user_id, token, platform, device_name)
@@ -192,7 +198,11 @@ begin
       device_name = excluded.device_name,
       last_seen_at = now(),
       updated_at = now()
+  where push_subscriptions.user_id = auth.uid()
   returning id into subscription_id;
+  if subscription_id is null then
+    raise exception 'Unable to save push subscription';
+  end if;
   return subscription_id;
 end;
 $$;
@@ -201,7 +211,7 @@ create or replace function public.remove_my_push_subscription(device_token text)
 returns boolean
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, public, pg_temp
 as $$
 begin
   if auth.uid() is null then
@@ -217,10 +227,11 @@ create or replace function public.sync_my_notification_jobs(jobs jsonb)
 returns integer
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   inserted_count integer := 0;
+  existing_job_count integer := 0;
 begin
   if auth.uid() is null or not public.is_current_user_allowed() then
     raise exception 'Account access denied';
@@ -228,8 +239,30 @@ begin
   if jsonb_typeof(jobs) <> 'array' then
     raise exception 'Jobs must be a JSON array';
   end if;
-  if jsonb_array_length(jobs) > 200 then
+  if jsonb_array_length(jobs) > 100 then
     raise exception 'Too many notification jobs';
+  end if;
+
+  if exists (
+    select 1 from public.notification_jobs j
+    where j.user_id = auth.uid()
+      and j.kind <> 'announcement'
+      and j.updated_at > now() - interval '10 seconds'
+  ) then
+    raise exception 'Notification sync rate limit exceeded';
+  end if;
+
+  delete from public.notification_jobs
+  where user_id = auth.uid()
+    and kind <> 'announcement'
+    and status in ('sent', 'failed', 'cancelled')
+    and updated_at < now() - interval '90 days';
+
+  select count(*) into existing_job_count
+  from public.notification_jobs j
+  where j.user_id = auth.uid() and j.kind <> 'announcement';
+  if existing_job_count >= 500 then
+    raise exception 'Notification job limit reached';
   end if;
 
   delete from public.notification_jobs
@@ -262,8 +295,12 @@ begin
       body = excluded.body,
       url = excluded.url,
       scheduled_for = excluded.scheduled_for,
+      status = 'pending',
+      attempts = 0,
+      claim_id = null,
+      last_error = null,
       updated_at = now()
-  where notification_jobs.status = 'pending';
+  where notification_jobs.status in ('pending', 'failed', 'cancelled');
 
   get diagnostics inserted_count = row_count;
   return inserted_count;
@@ -278,7 +315,7 @@ create or replace function public.admin_create_announcement(
 returns uuid
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   announcement_id uuid;
@@ -316,12 +353,25 @@ create or replace function public.claim_notification_jobs(batch_size integer def
 returns setof public.notification_jobs
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, public, pg_temp
 as $$
 begin
-  if coalesce(current_setting('request.jwt.claim.role', true), '') <> 'service_role' then
+  if coalesce(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' then
     raise exception 'Service role required';
   end if;
+
+  update public.notification_jobs j
+  set status = 'failed',
+      claim_id = null,
+      last_error = 'Lease expired after maximum attempts',
+      updated_at = now()
+  where j.status = 'sending'
+    and j.attempts >= 5
+    and j.updated_at < now() - interval '10 minutes';
 
   return query
   with candidates as (
@@ -335,10 +385,13 @@ begin
       and j.attempts < 5
     order by j.scheduled_for
     for update of j skip locked
-    limit least(greatest(batch_size, 1), 200)
+    limit least(greatest(batch_size, 1), 25)
   )
   update public.notification_jobs j
-  set status = 'sending', attempts = j.attempts + 1, updated_at = now()
+  set status = 'sending',
+      attempts = j.attempts + 1,
+      claim_id = gen_random_uuid(),
+      updated_at = now()
   from candidates c
   where j.id = c.id
   returning j.*;

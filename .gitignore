@@ -8,5 +8,6 @@ dist
 .env.*.local
 android/app/google-services.json
 android/keystore.properties
+supabase/.temp/
 *.jks
 *.keystore

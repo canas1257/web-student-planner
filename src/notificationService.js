@@ -77,7 +77,7 @@ export async function registerNativePush({ pushNotifications, saveToken, deviceL
     name: 'Pengingat belajar',
     description: 'Deadline tugas, jadwal, target harian, dan pengumuman RuangBelajar',
     importance: 5,
-    visibility: 1,
+    visibility: 0,
     vibration: true,
   })
   let permission = await pushNotifications.checkPermissions()

@@ -14,6 +14,14 @@ describe('send-notifications Edge Function', () => {
     expect(source).toContain("supabase.rpc('claim_notification_jobs'")
     expect(source).toContain("status: 'sent'")
     expect(source).toContain("status: 'pending'")
+    expect(source).toContain(".eq('claim_id', job.claim_id)")
+    expect(source).toContain(".eq('attempts', job.attempts)")
+  })
+
+  it('membatasi batch, timeout FCM, dan memeriksa hasil finalisasi database', () => {
+    expect(source).toContain("batch_size: 10")
+    expect(source).toContain('AbortSignal.timeout(10_000)')
+    expect(source).toContain('assertJobUpdated')
   })
 
   it('menonaktifkan token FCM invalid', () => {

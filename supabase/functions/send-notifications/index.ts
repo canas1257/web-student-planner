@@ -15,6 +15,7 @@ interface NotificationJob {
   body: string
   url: string
   attempts: number
+  claim_id: string
 }
 
 interface PushSubscription {
@@ -128,10 +129,29 @@ async function sendFcmMessage(
       method: 'POST',
       headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
       body: JSON.stringify({ message }),
+      signal: AbortSignal.timeout(10_000),
     },
   )
   const payload = await response.json().catch(() => ({}))
   return { ok: response.ok, status: response.status, code: firebaseErrorCode(payload) }
+}
+
+function assertJobUpdated(data: unknown, error: unknown, operation: string) {
+  if (error) throw error
+  if (!data) throw new Error(`Notification lease lost while ${operation}`)
+}
+
+async function updateClaimedJob(supabase: any, job: NotificationJob, values: Record<string, unknown>, operation: string) {
+  const { data, error } = await supabase
+    .from('notification_jobs')
+    .update({ ...values, claim_id: null, updated_at: new Date().toISOString() })
+    .eq('id', job.id)
+    .eq('status', 'sending')
+    .eq('claim_id', job.claim_id)
+    .eq('attempts', job.attempts)
+    .select('id')
+    .maybeSingle()
+  assertJobUpdated(data, error, operation)
 }
 
 Deno.serve(async (request) => {
@@ -145,6 +165,7 @@ Deno.serve(async (request) => {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: jsonHeaders })
   }
 
+  let stage = 'configuration'
   try {
     if (!supabaseUrl || !serviceRoleKey) throw new Error('Supabase backend environment belum lengkap')
     const serviceAccount = JSON.parse(Deno.env.get('FIREBASE_SERVICE_ACCOUNT') || '') as ServiceAccount
@@ -155,11 +176,17 @@ Deno.serve(async (request) => {
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     })
-    const { data: jobs, error: claimError } = await supabase.rpc('claim_notification_jobs', { batch_size: 50 })
-    if (claimError) throw claimError
+    stage = 'claim'
+    const { data: jobs, error: claimError } = await supabase.rpc('claim_notification_jobs', { batch_size: 10 })
+    if (claimError) {
+      console.error('claim_notification_jobs failed:', claimError.code || 'unknown')
+      return new Response(JSON.stringify({ error: 'Notification sender failed', stage, code: claimError.code || 'CLAIM_FAILED' }), { status: 500, headers: jsonHeaders })
+    }
     if (!jobs?.length) return new Response(JSON.stringify({ claimed: 0, sent: 0, failed: 0 }), { headers: jsonHeaders })
 
+    stage = 'oauth'
     const accessToken = await getGoogleAccessToken(serviceAccount)
+    stage = 'delivery'
     let sent = 0
     let failed = 0
 
@@ -172,10 +199,18 @@ Deno.serve(async (request) => {
       if (tokenError) throw tokenError
 
       if (!subscriptions?.length) {
-        failed += 1
-        await supabase.from('notification_jobs').update({
-          status: 'failed', last_error: 'Tidak ada perangkat aktif', updated_at: new Date().toISOString(),
-        }).eq('id', job.id)
+        if (job.attempts < 5) {
+          await updateClaimedJob(supabase, job, {
+            status: 'pending',
+            scheduled_for: new Date(Date.now() + 3_600_000).toISOString(),
+            last_error: 'Menunggu perangkat notifikasi aktif',
+          }, 'rescheduling missing device')
+        } else {
+          failed += 1
+          await updateClaimedJob(supabase, job, {
+            status: 'failed', last_error: 'Tidak ada perangkat aktif',
+          }, 'failing missing device')
+        }
         continue
       }
 
@@ -187,36 +222,42 @@ Deno.serve(async (request) => {
         if (result.ok) { delivered += 1; continue }
         errors.push(`${result.status}:${result.code || 'FCM_ERROR'}`)
         if (['UNREGISTERED', 'SENDER_ID_MISMATCH'].includes(result.code)) {
-          await supabase.from('push_subscriptions').update({ enabled: false, updated_at: new Date().toISOString() }).eq('id', subscription.id)
+          const { error: disableError } = await supabase.from('push_subscriptions')
+            .update({ enabled: false, updated_at: new Date().toISOString() })
+            .eq('id', subscription.id)
+          if (disableError) throw disableError
         } else if (result.status === 429 || result.status >= 500 || result.code === 'UNAVAILABLE') {
           transientFailure = true
         }
       }
 
       if (delivered > 0) {
+        // Product policy: a job completes after at least one active device accepts it.
+        // Failed device details remain recorded without exposing any token.
         sent += 1
-        await supabase.from('notification_jobs').update({
-          status: 'sent', sent_at: new Date().toISOString(), last_error: null, updated_at: new Date().toISOString(),
-        }).eq('id', job.id)
+        await updateClaimedJob(supabase, job, {
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+          last_error: errors.length ? `Partial delivery: ${errors.join(', ')}`.slice(0, 500) : null,
+        }, 'completing delivery')
       } else if (transientFailure && job.attempts < 5) {
         const delaySeconds = Math.min(3600, 60 * (2 ** Math.max(0, job.attempts - 1)))
-        await supabase.from('notification_jobs').update({
+        await updateClaimedJob(supabase, job, {
           status: 'pending',
           scheduled_for: new Date(Date.now() + delaySeconds * 1000).toISOString(),
           last_error: errors.join(', ').slice(0, 500),
-          updated_at: new Date().toISOString(),
-        }).eq('id', job.id)
+        }, 'rescheduling transient failure')
       } else {
         failed += 1
-        await supabase.from('notification_jobs').update({
-          status: 'failed', last_error: errors.join(', ').slice(0, 500), updated_at: new Date().toISOString(),
-        }).eq('id', job.id)
+        await updateClaimedJob(supabase, job, {
+          status: 'failed', last_error: errors.join(', ').slice(0, 500),
+        }, 'failing delivery')
       }
     }
 
     return new Response(JSON.stringify({ claimed: jobs.length, sent, failed }), { headers: jsonHeaders })
   } catch (error) {
     console.error('send-notifications failed:', error instanceof Error ? error.message : 'unknown error')
-    return new Response(JSON.stringify({ error: 'Notification sender failed' }), { status: 500, headers: jsonHeaders })
+    return new Response(JSON.stringify({ error: 'Notification sender failed', stage }), { status: 500, headers: jsonHeaders })
   }
 })
