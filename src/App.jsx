@@ -12,6 +12,7 @@ import { isSupabaseConfigured, supabase } from './supabase'
 import { resolveAccountAccessResult } from './adminMonitoring'
 import { createNewPlannerData } from './plannerData'
 import { finishTask, getElapsedSeconds, pauseTask, resumeTask, startTask } from './taskTimer'
+import { resolveTaskSubject } from './taskSubject'
 
 const STORAGE = 'ruangbelajar-data-v2'
 const months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
@@ -384,9 +385,15 @@ function TaskFocusModal({task,onClose,onChange}) {
 }
 
 function TaskModal({onClose,onSave}) {
-  const [form,setForm]=useState({title:'',subject:'Matematika',due:iso(addDays(new Date(),1)),priority:'Sedang'})
-  const submit=e=>{e.preventDefault();if(!form.title.trim())return;onSave({id:uid(),...form,title:form.title.trim(),done:false,timerState:'idle',elapsedSeconds:0,activeSince:null})}
-  return <Modal title="Tambah tugas baru" subtitle="Isi detail tugas dan kami akan mengatur prioritasnya." onClose={onClose}><form onSubmit={submit} className="modal-form"><Field label="Nama tugas" value={form.title} onChange={v=>setForm({...form,title:v})} placeholder="Contoh: Latihan integral"/><label><span>Mata pelajaran</span><select value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})}>{Object.keys(subjectColors).map(x=><option key={x}>{x}</option>)}</select></label><div className="form-grid"><Field label="Tenggat" type="date" value={form.due} onChange={v=>setForm({...form,due:v})}/><label><span>Prioritas</span><select value={form.priority} onChange={e=>setForm({...form,priority:e.target.value})}><option>Tinggi</option><option>Sedang</option><option>Rendah</option></select></label></div><div className="modal-actions"><button type="button" onClick={onClose}>Batal</button><button className="primary-btn" type="submit"><Plus size={17}/>Tambahkan tugas</button></div></form></Modal>
+  const [form,setForm]=useState({title:'',subject:'Matematika',customSubject:'',due:iso(addDays(new Date(),1)),priority:'Sedang'})
+  const submit=e=>{
+    e.preventDefault()
+    const subject=resolveTaskSubject(form.subject,form.customSubject)
+    if(!form.title.trim()||!subject)return
+    const {customSubject,...taskForm}=form
+    onSave({id:uid(),...taskForm,subject,title:form.title.trim(),done:false,timerState:'idle',elapsedSeconds:0,activeSince:null})
+  }
+  return <Modal title="Tambah tugas baru" subtitle="Isi detail tugas dan kami akan mengatur prioritasnya." onClose={onClose}><form onSubmit={submit} className="modal-form"><Field label="Nama tugas" value={form.title} onChange={v=>setForm({...form,title:v})} placeholder="Contoh: Latihan integral"/><label><span>Mata pelajaran</span><select value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})}>{Object.keys(subjectColors).map(x=><option key={x}>{x}</option>)}</select></label>{form.subject==='Lainnya'&&<Field label="Tulis mata pelajaran" value={form.customSubject} onChange={v=>setForm({...form,customSubject:v})} placeholder="Contoh: Informatika" maxLength="60" required autoFocus/>}<div className="form-grid"><Field label="Tenggat" type="date" value={form.due} onChange={v=>setForm({...form,due:v})}/><label><span>Prioritas</span><select value={form.priority} onChange={e=>setForm({...form,priority:e.target.value})}><option>Tinggi</option><option>Sedang</option><option>Rendah</option></select></label></div><div className="modal-actions"><button type="button" onClick={onClose}>Batal</button><button className="primary-btn" type="submit"><Plus size={17}/>Tambahkan tugas</button></div></form></Modal>
 }
 function ScheduleModal({onClose,onSave}) {
   const [form,setForm]=useState({title:'Matematika',date:iso(new Date()),time:'08:00',endTime:'09:00',room:'Ruang kelas',repeat:'Mingguan',color:subjectColors.Matematika})
