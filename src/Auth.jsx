@@ -45,7 +45,7 @@ export default function AuthScreen({ theme, setTheme }) {
 
   return <div className="auth-shell">
     <aside className="auth-story">
-      <div className="auth-brand"><span><GraduationCap size={24}/></span>Ruang<b>Belajar</b></div>
+      <div className="auth-brand"><span><img src={`${import.meta.env.BASE_URL}brand/ruangbelajar-logo.svg`} alt=""/></span>Ruang<b>Belajar</b></div>
       <div className="auth-copy">
         <span className="auth-kicker"><Sparkles size={14}/> PLANNER PRIBADI PELAJAR</span>
         <h1>Rencanakan hari.<br/><em>Wujudkan mimpi.</em></h1>
@@ -63,7 +63,7 @@ export default function AuthScreen({ theme, setTheme }) {
     <main className="auth-main">
       <div className="auth-theme"><Palette size={15}/>{[['light','Terang'],['dark','Hitam'],['purple','Purple']].map(([id,label]) => <button key={id} className={theme===id?'active':''} onClick={()=>setTheme(id)} title={`Tema ${label}`}>{label}</button>)}</div>
       <div className="auth-card">
-        <div className="auth-mobile-brand"><GraduationCap/>Ruang<b>Belajar</b></div>
+        <div className="auth-mobile-brand"><img src={`${import.meta.env.BASE_URL}brand/ruangbelajar-logo.svg`} alt=""/>Ruang<b>Belajar</b></div>
         <span className="eyebrow">{mode === 'login' ? 'SELAMAT DATANG KEMBALI' : 'MULAI PERJALANANMU'}</span>
         <h2>{mode === 'login' ? 'Masuk ke akunmu' : 'Buat akun pelajar'}</h2>
         <p>{mode === 'login' ? 'Lanjutkan progres dan jadwal belajarmu.' : 'Satu langkah menuju belajar yang lebih teratur.'}</p>

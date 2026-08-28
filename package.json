@@ -10,8 +10,14 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@capacitor/push-notifications": "^8.1.2",
+    "@capacitor/splash-screen": "^8.0.2",
     "@supabase/supabase-js": "^2.112.4",
     "@vitejs/plugin-react": "latest",
+    "firebase": "^12.18.0",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
@@ -19,6 +25,7 @@
     "vite": "latest"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "playwright": "^1.62.1",
     "vitest": "^4.1.11"
   }

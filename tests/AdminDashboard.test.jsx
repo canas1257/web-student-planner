@@ -60,4 +60,20 @@ describe('AdminView', () => {
     expect(html).toContain('Blokir')
     expect(html).toContain('Hapus')
   })
+
+  it('menyediakan composer pengumuman push yang langsung dikirim', () => {
+    const html = renderToStaticMarkup(<AdminView
+      students={students}
+      filteredStudents={students}
+      stats={{ total: 1 }}
+      announcement={{ title: 'Libur sekolah', body: 'Besok belajar dari rumah.', url: './?page=dashboard' }}
+      onAnnouncement={() => {}}
+      onSendAnnouncement={() => {}}
+      announcementState="idle"
+    />)
+    expect(html).toContain('Kirim pengumuman')
+    expect(html).toContain('Judul pengumuman')
+    expect(html).toContain('Besok belajar dari rumah.')
+    expect(html).toContain('Kirim sekarang')
+  })
 })
