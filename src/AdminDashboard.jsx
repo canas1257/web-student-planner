@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, Check, CheckCircle2, Clock3, GraduationCap, LoaderCircle,
-  LogOut, Moon, Palette, RefreshCw, Search, ShieldCheck, Sun, Trash2,
+  Activity, Check, CheckCircle2, Clock3, LoaderCircle,
+  LogOut, Megaphone, Moon, Palette, RefreshCw, Search, Send, ShieldCheck, Sun, Trash2,
   UserCheck, UserRound, UserX, UsersRound, XCircle,
 } from 'lucide-react'
 import { filterStudents, getAdminStats } from './adminMonitoring'
+import { disablePushNotificationsForLogout } from './notificationService'
 import { supabase } from './supabase'
 import './admin.css'
 
@@ -40,6 +41,8 @@ export function AdminView({
   onFilter = () => {}, onQuery = () => {}, onStatus = () => {}, onDelete = () => {},
   onRefresh = () => {}, onLogout = () => {}, loading = false, actionId = '', error = '',
   adminEmail = '', theme = 'light', setTheme = () => {},
+  announcement = { title: '', body: '', url: './?page=dashboard' },
+  onAnnouncement = () => {}, onSendAnnouncement = () => {}, announcementState = 'idle',
 }) {
   const cards = [
     ['Total murid', stats.total || 0, UsersRound, 'violet'],
@@ -50,7 +53,7 @@ export function AdminView({
   ]
   return <div className="admin-app">
     <aside className="admin-sidebar">
-      <div className="admin-brand"><span><GraduationCap/></span><div>Ruang<b>Belajar</b><small>ADMIN CONSOLE</small></div></div>
+      <div className="admin-brand"><span><img src={`${import.meta.env.BASE_URL}brand/ruangbelajar-logo.svg`} alt=""/></span><div>Ruang<b>Belajar</b><small>ADMIN CONSOLE</small></div></div>
       <nav><button className="active"><UsersRound/>Monitoring murid</button></nav>
       <div className="admin-security"><ShieldCheck/><strong>Data minimum</strong><p>Admin hanya melihat identitas dan status aktivitas, bukan isi tugas pribadi.</p></div>
       <div className="admin-account"><span>{(adminEmail || 'A').slice(0, 1).toUpperCase()}</span><div><strong>Administrator</strong><small>{adminEmail}</small></div></div>
@@ -64,6 +67,17 @@ export function AdminView({
 
       <section className="admin-content">
         <div className="admin-stat-grid">{cards.map(([label, value, Icon, tone]) => <article key={label} className={`admin-stat ${tone}`}><span><Icon/></span><div><strong>{value}</strong><small>{label}</small></div></article>)}</div>
+
+        <section className="admin-panel admin-announcement">
+          <div className="announcement-copy"><span><Megaphone/></span><div><small>PUSH NOTIFICATION</small><h2>Kirim pengumuman</h2><p>Pesan dikirim segera ke perangkat murid yang mengaktifkan pengumuman.</p></div></div>
+          <div className="announcement-form">
+            <label><span>Judul pengumuman</span><input maxLength="120" value={announcement.title} onChange={event => onAnnouncement('title', event.target.value)} placeholder="Contoh: Perubahan jadwal besok"/></label>
+            <label><span>Isi pesan</span><textarea maxLength="500" value={announcement.body} onChange={event => onAnnouncement('body', event.target.value)} placeholder="Tulis informasi singkat dan jelas..."/></label>
+            <div><label><span>Buka halaman</span><select value={announcement.url} onChange={event => onAnnouncement('url', event.target.value)}><option value="./?page=dashboard">Dashboard</option><option value="./?page=tasks">Tugas</option><option value="./?page=calendar">Kalender</option><option value="./?page=profile">Profil</option></select></label><button type="button" onClick={onSendAnnouncement} disabled={announcementState === 'sending' || !announcement.title.trim() || !announcement.body.trim()}><Send/>{announcementState === 'sending' ? 'Mengirim…' : 'Kirim sekarang'}</button></div>
+            {announcementState === 'sent' && <p className="announcement-success"><Check/>Pengumuman masuk antrean pengiriman.</p>}
+            {announcementState === 'error' && <p className="announcement-error"><XCircle/>Pengumuman gagal. Pastikan schema notifikasi sudah dipasang.</p>}
+          </div>
+        </section>
 
         <section className="admin-panel">
           <div className="admin-panel-head"><div><h2>Daftar murid</h2><p>{students.length} akun terdaftar · diperbarui dalam WIB</p></div><label className="admin-search"><Search/><input value={query} onChange={event => onQuery(event.target.value)} placeholder="Cari nama atau email..."/></label></div>
@@ -98,6 +112,8 @@ export default function AdminDashboard({ user, theme, setTheme }) {
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState('')
   const [error, setError] = useState('')
+  const [announcement, setAnnouncement] = useState({ title: '', body: '', url: './?page=dashboard' })
+  const [announcementState, setAnnouncementState] = useState('idle')
 
   const load = async () => {
     setLoading(true)
@@ -127,5 +143,25 @@ export default function AdminDashboard({ user, theme, setTheme }) {
     setStudents(current => current.filter(item => item.user_id !== student.user_id))
   }
 
-  return <AdminView students={students} filteredStudents={filteredStudents} stats={stats} filter={filter} query={query} onFilter={setFilter} onQuery={setQuery} onStatus={changeStatus} onDelete={deleteStudent} onRefresh={load} onLogout={() => supabase.auth.signOut()} loading={loading} actionId={actionId} error={error} adminEmail={user.email} theme={theme} setTheme={setTheme}/>
+  const sendAnnouncement = async () => {
+    if (!announcement.title.trim() || !announcement.body.trim()) return
+    setAnnouncementState('sending')
+    const { data, error: sendError } = await supabase.rpc('admin_create_announcement', {
+      announcement_title: announcement.title.trim(),
+      announcement_body: announcement.body.trim(),
+      announcement_url: announcement.url,
+    })
+    if (sendError || !data) { setAnnouncementState('error'); return }
+    setAnnouncement({ title: '', body: '', url: './?page=dashboard' })
+    setAnnouncementState('sent')
+    setTimeout(() => setAnnouncementState('idle'), 3500)
+  }
+
+  const logout = async () => {
+    try { await disablePushNotificationsForLogout(supabase) }
+    catch (logoutError) { console.warn('Token notifikasi lokal belum dapat dibersihkan:', logoutError) }
+    await supabase.auth.signOut()
+  }
+
+  return <AdminView students={students} filteredStudents={filteredStudents} stats={stats} filter={filter} query={query} onFilter={setFilter} onQuery={setQuery} onStatus={changeStatus} onDelete={deleteStudent} onRefresh={load} onLogout={logout} loading={loading} actionId={actionId} error={error} adminEmail={user.email} theme={theme} setTheme={setTheme} announcement={announcement} onAnnouncement={(key, value) => { setAnnouncement(current => ({ ...current, [key]: value })); setAnnouncementState('idle') }} onSendAnnouncement={sendAnnouncement} announcementState={announcementState}/>
 }

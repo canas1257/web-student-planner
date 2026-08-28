@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard, CheckSquare2, CalendarDays, UserRound, Plus, Search,
   Bell, Clock3, BookOpen, Target, Flame, ChevronLeft, ChevronRight,
-  MoreHorizontal, X, Check, Trash2, Pencil, GraduationCap, Sparkles,
+  MoreHorizontal, X, Check, Trash2, Pencil, Sparkles,
   Timer, Trophy, Mail, MapPin, Save, Menu, CircleAlert, Moon, Sun,
   Palette, LogOut, Cloud, LoaderCircle, Play, Pause, CircleCheckBig, ShieldCheck, RefreshCw,
 } from 'lucide-react'
@@ -14,8 +14,21 @@ import { createNewPlannerData } from './plannerData'
 import { finishTask, getElapsedSeconds, pauseTask, resumeTask, startTask } from './taskTimer'
 import { resolveTaskSubject } from './taskSubject'
 import { resolveScheduleSubject } from './scheduleSubject'
+import NotificationSettings, { useNotificationSettings } from './NotificationSettings'
+import { disablePushNotificationsForLogout } from './notificationService'
 
 const STORAGE = 'ruangbelajar-data-v2'
+const pageIds = new Set(['dashboard', 'tasks', 'calendar', 'profile'])
+const wibDayFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+})
+const wibDayKey = (date = new Date()) => wibDayFormatter.format(date)
+
+async function signOutSafely() {
+  try { await disablePushNotificationsForLogout(supabase) }
+  catch (error) { console.warn('Token notifikasi lokal belum dapat dibersihkan:', error) }
+  await supabase.auth.signOut()
+}
 const months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
 const days = ['Min','Sen','Sel','Rab','Kam','Jum','Sab']
 const subjectColors = {
@@ -134,11 +147,14 @@ function AccessCheckError({ onRetry }) {
 }
 
 function BlockedAccount({ email }) {
-  return <div className="blocked-account"><div><span><ShieldCheck/></span><small>AKSES DINONAKTIFKAN</small><h1>Akun ini telah diblokir</h1><p>Akun <strong>{email}</strong> tidak dapat mengakses planner. Hubungi guru atau administrator jika menurutmu ini sebuah kesalahan.</p><button onClick={() => supabase.auth.signOut()}><LogOut/>Keluar dari akun</button></div></div>
+  return <div className="blocked-account"><div><span><ShieldCheck/></span><small>AKSES DINONAKTIFKAN</small><h1>Akun ini telah diblokir</h1><p>Akun <strong>{email}</strong> tidak dapat mengakses planner. Hubungi guru atau administrator jika menurutmu ini sebuah kesalahan.</p><button onClick={signOutSafely}><LogOut/>Keluar dari akun</button></div></div>
 }
 
 function PlannerApp({ user, theme, setTheme, onAccessDenied }) {
-  const [page, setPage] = useState('dashboard')
+  const [page, setPage] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('page')
+    return pageIds.has(requested) ? requested : 'dashboard'
+  })
   const [data, setData, syncState] = usePlannerData(user, onAccessDenied)
   const [taskModal, setTaskModal] = useState(false)
   const [scheduleModal, setScheduleModal] = useState(false)
@@ -146,16 +162,45 @@ function PlannerApp({ user, theme, setTheme, onAccessDenied }) {
   const [mobileNav, setMobileNav] = useState(false)
   const [toast, setToast] = useState('')
 
+  const navigate = useCallback((nextPage) => {
+    if (!pageIds.has(nextPage)) return
+    const url = new URL(window.location.href)
+    if (nextPage === 'dashboard') url.searchParams.delete('page')
+    else url.searchParams.set('page', nextPage)
+    window.history.replaceState({}, '', url)
+    setPage(nextPage)
+  }, [])
   const notify = (message) => { setToast(message); setTimeout(() => setToast(''), 2400) }
+  const notificationSettings = useNotificationSettings(supabase, data, notify)
+  useEffect(() => {
+    const navigateFromNotification = (event) => {
+      const requested = event.detail?.page || new URLSearchParams(window.location.search).get('page')
+      if (pageIds.has(requested)) navigate(requested)
+    }
+    window.addEventListener('ruangbelajar:navigate', navigateFromNotification)
+    window.addEventListener('popstate', navigateFromNotification)
+    return () => {
+      window.removeEventListener('ruangbelajar:navigate', navigateFromNotification)
+      window.removeEventListener('popstate', navigateFromNotification)
+    }
+  }, [navigate])
   const openAdd = () => page === 'calendar' ? setScheduleModal(true) : setTaskModal(true)
   const pageTitle = nav.find(([id]) => id === page)?.[1]
   const focusedTask = data?.tasks.find(task => task.id === focusedTaskId)
   const saveFocusChange = (updated, finished = false) => {
-    setData(current => ({
-      ...current,
-      tasks: current.tasks.map(task => task.id === updated.id ? updated : task),
-      studyMinutes: finished ? current.studyMinutes + Math.max(1, Math.round(updated.elapsedSeconds / 60)) : current.studyMinutes,
-    }))
+    setData(current => {
+      const addedMinutes = finished ? Math.max(1, Math.round(updated.elapsedSeconds / 60)) : 0
+      const day = wibDayKey()
+      return {
+        ...current,
+        tasks: current.tasks.map(task => task.id === updated.id ? updated : task),
+        studyMinutes: current.studyMinutes + addedMinutes,
+        studyByDate: finished ? {
+          ...(current.studyByDate || {}),
+          [day]: Number(current.studyByDate?.[day] || 0) + addedMinutes,
+        } : current.studyByDate,
+      }
+    })
     supabase.rpc('record_study_activity').then(({ error }) => {
       if (error && /blocked|permission denied/i.test(error.message || '')) onAccessDenied()
     })
@@ -166,16 +211,16 @@ function PlannerApp({ user, theme, setTheme, onAccessDenied }) {
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav ? 'open' : ''}`}>
-      <div className="brand"><div className="brand-mark"><GraduationCap size={22}/></div><span>Ruang<span>Belajar</span></span></div>
+      <div className="brand"><div className="brand-mark"><img src={`${import.meta.env.BASE_URL}brand/ruangbelajar-logo.svg`} alt=""/></div><span>Ruang<span>Belajar</span></span></div>
       <button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="Tutup menu"><X/></button>
-      <nav>{nav.map(([id,label,Icon]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => {setPage(id);setMobileNav(false)}}><Icon size={19}/><span>{label}</span>{id === 'tasks' && <em>{data.tasks.filter(t => !t.done).length}</em>}</button>)}</nav>
+      <nav>{nav.map(([id,label,Icon]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => {navigate(id);setMobileNav(false)}}><Icon size={19}/><span>{label}</span>{id === 'tasks' && <em>{data.tasks.filter(t => !t.done).length}</em>}</button>)}</nav>
       <div className="sidebar-card">
         <div className="tiny-orbit"><Sparkles size={17}/></div>
         <strong>Tetap konsisten!</strong>
         <p>Kamu sudah belajar {data.streak} hari berturut-turut.</p>
         <div className="streak-row">{[1,2,3,4,5,6,7].map(n => <span key={n} className={n <= data.streak ? 'lit' : ''}>{days[n % 7][0]}</span>)}</div>
       </div>
-      <div className="side-profile" onClick={() => setPage('profile')}>
+      <div className="side-profile" onClick={() => navigate('profile')}>
         <Avatar name={data.profile.name}/><div><strong>{data.profile.name}</strong><small>{data.profile.className}</small></div><MoreHorizontal size={18}/>
       </div>
     </aside>
@@ -189,17 +234,17 @@ function PlannerApp({ user, theme, setTheme, onAccessDenied }) {
           <label className="search"><Search size={18}/><input placeholder="Cari tugas..." /></label>
           <span className={`sync-state ${syncState}`} title="Status sinkronisasi"><Cloud size={15}/>{syncState === 'saving' ? 'Menyimpan' : syncState === 'error' ? 'Offline' : 'Tersimpan'}</span>
           <ThemePicker theme={theme} setTheme={setTheme}/>
-          <button className="icon-btn" aria-label="Notifikasi"><Bell size={19}/><i/></button>
-          <button className="icon-btn logout-btn" aria-label="Keluar" title="Keluar" onClick={() => supabase.auth.signOut()}><LogOut size={18}/></button>
+          <button className="icon-btn" aria-label="Buka pengaturan notifikasi" title="Pengaturan notifikasi" onClick={() => navigate('profile')}><Bell size={19}/><i/></button>
+          <button className="icon-btn logout-btn" aria-label="Keluar" title="Keluar" onClick={signOutSafely}><LogOut size={18}/></button>
           {page !== 'profile' && <button className="primary-btn" onClick={openAdd}><Plus size={18}/>{page === 'calendar' ? 'Tambah jadwal' : 'Tambah tugas'}</button>}
         </div>
       </header>
 
       <section className="content">
-        {page === 'dashboard' && <Dashboard data={data} setData={setData} setPage={setPage} openTask={() => setTaskModal(true)} openFocus={setFocusedTaskId}/>}
+        {page === 'dashboard' && <Dashboard data={data} setData={setData} setPage={navigate} openTask={() => setTaskModal(true)} openFocus={setFocusedTaskId}/>}
         {page === 'tasks' && <Tasks data={data} setData={setData} onAdd={() => setTaskModal(true)} openFocus={setFocusedTaskId} notify={notify}/>}
         {page === 'calendar' && <Calendar data={data} setData={setData} onAdd={() => setScheduleModal(true)} notify={notify}/>}
-        {page === 'profile' && <Profile data={data} setData={setData} notify={notify}/>}
+        {page === 'profile' && <Profile data={data} setData={setData} notify={notify} notifications={notificationSettings}/>}
       </section>
     </main>
 
@@ -326,17 +371,20 @@ function Calendar({data,setData,onAdd,notify}) {
   </>
 }
 
-function Profile({data,setData,notify}) {
+function Profile({data,setData,notify,notifications}) {
   const [form,setForm]=useState(data.profile)
   const update=(k,v)=>setForm(f=>({...f,[k]:v}))
   const save=()=>{setData(d=>({...d,profile:{...form,dailyTarget:Number(form.dailyTarget)}}));notify('Profil berhasil diperbarui')}
   return <>
     <div className="profile-hero"><div className="profile-pattern"/><Avatar name={form.name} large/><div><span className="eyebrow">PROFIL PELAJAR</span><h2>{form.name}</h2><p>{form.className} · {form.school}</p></div><div className="level-chip"><Trophy size={18}/><span><small>Level belajar</small><b>Penjelajah</b></span></div></div>
     <div className="profile-grid">
+      <div className="profile-main">
       <section className="panel profile-form"><div className="panel-head"><div><h3>Informasi pribadi</h3><p>Kenali dirimu dan tujuan belajarmu.</p></div><Pencil size={18}/></div>
         <div className="form-grid"><Field label="Nama lengkap" value={form.name} onChange={v=>update('name',v)}/><Field label="Kelas" value={form.className} onChange={v=>update('className',v)}/><Field label="Sekolah" value={form.school} onChange={v=>update('school',v)}/><Field label="Email" type="email" value={form.email} onChange={v=>update('email',v)}/><Field label="Kota" value={form.city} onChange={v=>update('city',v)}/><Field label="Target belajar (jam/hari)" type="number" min="1" max="12" value={form.dailyTarget} onChange={v=>update('dailyTarget',v)}/><label className="full"><span>Cita-cita / target utama</span><textarea value={form.goal} onChange={e=>update('goal',e.target.value)}/></label></div>
         <button className="primary-btn save-btn" onClick={save}><Save size={17}/>Simpan perubahan</button>
       </section>
+      <NotificationSettings {...notifications}/>
+      </div>
       <aside className="profile-side">
         <section className="panel achievement"><span className="stat-icon orange"><Flame/></span><div><small>Streak saat ini</small><b>{data.streak} hari</b><p>Teruskan, kamu luar biasa!</p></div></section>
         <section className="panel goals"><h3>Ringkasan belajar</h3><div><span><Timer/>Waktu minggu ini</span><b>{Math.floor(data.studyMinutes/60)}j {data.studyMinutes%60}m</b></div><div><span><CheckSquare2/>Tugas selesai</span><b>{data.tasks.filter(t=>t.done).length}</b></div><div><span><Target/>Target harian</span><b>{form.dailyTarget} jam</b></div></section>

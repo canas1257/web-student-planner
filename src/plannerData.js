@@ -12,6 +12,7 @@ export function createNewPlannerData(user) {
       dailyTarget: 2,
     },
     studyMinutes: 0,
+    studyByDate: {},
     streak: 0,
   }
 }
