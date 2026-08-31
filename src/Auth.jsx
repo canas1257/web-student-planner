@@ -70,12 +70,13 @@ export default function AuthScreen({ theme, setTheme }) {
         <div className="auth-tabs"><button className={mode==='login'?'active':''} onClick={()=>{setMode('login');setMessage({})}}>Masuk</button><button className={mode==='register'?'active':''} onClick={()=>{setMode('register');setMessage({})}}>Daftar</button></div>
         <form onSubmit={submit}>
           {mode === 'register' && <label><span>Nama lengkap</span><div><UserRound/><input required value={form.name} onChange={e=>update('name',e.target.value)} placeholder="Nama lengkapmu"/></div></label>}
-          <label><span>Email</span><div><Mail/><input required type="email" value={form.email} onChange={e=>update('email',e.target.value)} placeholder="nama@email.com"/></div></label>
-          <label><span>Password</span><div><LockKeyhole/><input required minLength="6" type={showPassword?'text':'password'} value={form.password} onChange={e=>update('password',e.target.value)} placeholder="Minimal 6 karakter"/><button type="button" onClick={()=>setShowPassword(!showPassword)}>{showPassword?<EyeOff/>:<Eye/>}</button></div></label>
-          {mode === 'register' && <label><span>Konfirmasi password</span><div><LockKeyhole/><input required type={showPassword?'text':'password'} value={form.confirm} onChange={e=>update('confirm',e.target.value)} placeholder="Ulangi password"/></div></label>}
+          <label><span>Email</span><div><Mail/><input required type="email" autoComplete="email" value={form.email} onChange={e=>update('email',e.target.value)} placeholder="nama@email.com"/></div></label>
+          <label><span>Password</span><div><LockKeyhole/><input required minLength="6" type={showPassword?'text':'password'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={form.password} onChange={e=>update('password',e.target.value)} placeholder="Minimal 6 karakter"/><button type="button" onClick={()=>setShowPassword(!showPassword)} aria-label={showPassword ? 'Sembunyikan password' : 'Tampilkan password'}>{showPassword?<EyeOff/>:<Eye/>}</button></div></label>
+          {mode === 'register' && <label><span>Konfirmasi password</span><div><LockKeyhole/><input required type={showPassword?'text':'password'} autoComplete="new-password" value={form.confirm} onChange={e=>update('confirm',e.target.value)} placeholder="Ulangi password"/></div></label>}
           {message.text && <div className={`auth-message ${message.type}`}>{message.text}</div>}
           <button className="auth-submit" disabled={loading}>{loading ? 'Mohon tunggu...' : mode==='login'?'Masuk ke planner':'Buat akun'} {!loading&&<ArrowRight/>}</button>
         </form>
+        <div className="auth-security"><LockKeyhole/><span><b>Login resmi belajarteratur.web.id</b>Autentikasi akun diproses oleh Supabase melalui HTTPS. Kami tidak meminta OTP, data perbankan, atau instalasi software.</span></div>
         <small className="auth-terms">Dengan melanjutkan, kamu menyetujui penggunaan data untuk menyimpan planner pribadimu.</small>
       </div>
     </main>

@@ -7,6 +7,7 @@ import {
   Palette, LogOut, Cloud, LoaderCircle, Play, Pause, CircleCheckBig, ShieldCheck, RefreshCw,
 } from 'lucide-react'
 import AuthScreen, { SetupRequired } from './Auth'
+import PublicLanding from './PublicLanding'
 import AdminDashboard from './AdminDashboard'
 import { isSupabaseConfigured, supabase } from './supabase'
 import { resolveAccountAccessResult } from './adminMonitoring'
@@ -134,7 +135,10 @@ export default function App() {
 
   if (!isSupabaseConfigured) return <SetupRequired theme={theme} setTheme={setTheme}/>
   if (authLoading) return <div className="app-loading"><LoaderCircle/><p>Menyiapkan planner...</p></div>
-  if (!session) return <AuthScreen theme={theme} setTheme={setTheme}/>
+  if (!session) {
+    const showAuth = new URLSearchParams(window.location.search).has('auth')
+    return showAuth ? <AuthScreen theme={theme} setTheme={setTheme}/> : <PublicLanding/>
+  }
   if (accessLoading || !accountAccess) return <div className="app-loading"><LoaderCircle/><p>Memeriksa akses akun...</p></div>
   if (accountAccess.role === 'error') return <AccessCheckError onRetry={() => setAccessRetry(value => value + 1)}/>
   if (accountAccess.role === 'admin') return <AdminDashboard user={session.user} theme={theme} setTheme={setTheme}/>
